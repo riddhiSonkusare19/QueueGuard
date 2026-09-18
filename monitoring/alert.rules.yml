@@ -1,0 +1,61 @@
+groups:
+  - name: queueguard-alerts
+    rules:
+
+      - alert: QueueBacklogHigh
+        expr: queueguard_queue_depth > 500
+        for: 1m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Queue backlog is building up for {{ $labels.event_id }}"
+          description: "Queue depth is {{ $value }}, above the 500 threshold for over a minute. This should trigger HPA to scale the Booking Service."
+
+      - alert: QueueBacklogCritical
+        expr: queueguard_queue_depth > 2000
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Queue backlog is critically high for {{ $labels.event_id }}"
+          description: "Queue depth is {{ $value }}. Users may be waiting significantly longer than expected."
+
+      - alert: HighBookingFailureRate
+        expr: >
+          rate(queueguard_bookings_failed_total[2m])
+          /
+          (rate(queueguard_bookings_failed_total[2m]) + rate(queueguard_bookings_confirmed_total[2m]))
+          > 0.05
+        for: 2m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Booking failure rate above 5%"
+          description: "{{ $value | humanizePercentage }} of booking attempts are failing over the last 2 minutes."
+
+      - alert: ServiceDown
+        expr: up == 0
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: "{{ $labels.job }} is down"
+          description: "Prometheus has not been able to scrape {{ $labels.job }} for over a minute."
+
+      - alert: HighPodCPU
+        expr: >
+          sum(rate(container_cpu_usage_seconds_total{namespace="queueguard"}[5m])) by (pod)
+          > 0.8
+        for: 3m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Pod {{ $labels.pod }} is under high CPU load"
+          description: "This is normal during a simulated surge if HPA is actively scaling - check replica count before treating as an incident."
+
+      - alert: PodRestartingFrequently
+        expr: increase(kube_pod_container_status_restarts_total{namespace="queueguard"}[15m]) > 3
+        labels:
+          severity: warning
+        annotations:
+          summary: "Pod {{ $labels.pod }} has restarted more than 3 times in 15 minutes"

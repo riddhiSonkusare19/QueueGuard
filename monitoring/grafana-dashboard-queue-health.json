@@ -1,0 +1,104 @@
+{
+  "title": "QueueGuard - Queue Health",
+  "uid": "queueguard-queue-health",
+  "timezone": "browser",
+  "schemaVersion": 39,
+  "version": 1,
+  "refresh": "5s",
+  "time": { "from": "now-15m", "to": "now" },
+  "panels": [
+    {
+      "id": 1,
+      "title": "Queue Depth",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 0 },
+      "targets": [
+        {
+          "expr": "queueguard_queue_depth",
+          "legendFormat": "{{event_id}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": { "unit": "short" },
+        "overrides": []
+      }
+    },
+    {
+      "id": 2,
+      "title": "Booking Outcomes (rate/min)",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 0 },
+      "targets": [
+        {
+          "expr": "rate(queueguard_bookings_confirmed_total[1m]) * 60",
+          "legendFormat": "confirmed"
+        },
+        {
+          "expr": "rate(queueguard_bookings_failed_total[1m]) * 60",
+          "legendFormat": "failed - {{reason}}"
+        }
+      ]
+    },
+    {
+      "id": 3,
+      "title": "Queue Backlog Alert Threshold",
+      "type": "stat",
+      "gridPos": { "h": 4, "w": 6, "x": 0, "y": 8 },
+      "targets": [{ "expr": "max(queueguard_queue_depth)" }],
+      "fieldConfig": {
+        "defaults": {
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": null },
+              { "color": "orange", "value": 500 },
+              { "color": "red", "value": 2000 }
+            ]
+          }
+        },
+        "overrides": []
+      }
+    },
+    {
+      "id": 4,
+      "title": "Active Pod Count (Queue + Booking)",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 8 },
+      "targets": [
+        {
+          "expr": "count(kube_pod_info{namespace=\"queueguard\", pod=~\"queue-service.*\"})",
+          "legendFormat": "queue-service pods"
+        },
+        {
+          "expr": "count(kube_pod_info{namespace=\"queueguard\", pod=~\"booking-service.*\"})",
+          "legendFormat": "booking-service pods"
+        }
+      ]
+    },
+    {
+      "id": 5,
+      "title": "Booking Service Error Rate",
+      "type": "gauge",
+      "gridPos": { "h": 4, "w": 6, "x": 6, "y": 8 },
+      "targets": [
+        {
+          "expr": "rate(queueguard_bookings_failed_total[2m]) / (rate(queueguard_bookings_failed_total[2m]) + rate(queueguard_bookings_confirmed_total[2m]))"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percentunit",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": null },
+              { "color": "orange", "value": 0.05 },
+              { "color": "red", "value": 0.15 }
+            ]
+          }
+        },
+        "overrides": []
+      }
+    }
+  ]
+}

@@ -1,0 +1,198 @@
+// QueueGuard CI/CD Pipeline
+//
+// Stages: Checkout -> Unit Tests -> Integration Tests -> Code Review
+//         (SonarQube) -> Coverage Report -> Docker Build -> Push to ECR
+//         -> Ansible Deploy (rolling update to EKS) -> Smoke Tests
+//
+// Required Jenkins plugins: Pipeline, Docker Pipeline, JUnit,
+//   HTML Publisher (for coverage), SonarQube Scanner, Ansible.
+// Required Jenkins credentials (Manage Jenkins > Credentials):
+//   - aws-credentials       (AWS access key/secret, used for ECR + EKS)
+//   - sonarqube-token       (secret text)
+
+pipeline {
+    agent any
+
+    environment {
+        AWS_REGION        = 'us-east-1'
+        ECR_REGISTRY      = credentials('ecr-registry-url')   // e.g. 123456789.dkr.ecr.us-east-1.amazonaws.com
+        IMAGE_TAG         = "${env.GIT_COMMIT.take(7)}"
+        SERVICES          = 'queue_service booking_service notification_service'
+    }
+
+    options {
+        timestamps()
+        disableConcurrentBuilds()
+    }
+
+    stages {
+
+        stage('Checkout') {
+            steps {
+                checkout scm
+            }
+        }
+
+        stage('Unit Tests') {
+            steps {
+                script {
+                    for (svc in env.SERVICES.split(' ')) {
+                        dir(svc) {
+                            sh '''
+                                python3 -m venv .venv
+                                . .venv/bin/activate
+                                pip install -q -r requirements-dev.txt
+                                pytest tests/test_unit.py -v --junitxml=unit-results.xml
+                            '''
+                        }
+                    }
+                }
+            }
+            post {
+                always {
+                    junit '**/unit-results.xml'
+                }
+            }
+        }
+
+        stage('Integration Tests') {
+            steps {
+                sh 'docker compose up -d postgres redis rabbitmq'
+                sh 'sleep 10'   // let health checks settle
+                script {
+                    for (svc in env.SERVICES.split(' ')) {
+                        dir(svc) {
+                            sh '''
+                                . .venv/bin/activate
+                                pytest tests/test_integration.py -m integration -v --junitxml=integration-results.xml
+                            '''
+                        }
+                    }
+                }
+            }
+            post {
+                always {
+                    junit '**/integration-results.xml'
+                    sh 'docker compose down -v'
+                }
+            }
+        }
+
+        stage('Code Review - SonarQube') {
+            // Python codebase: SonarQube is used rather than PMD, which
+            // is primarily Java-oriented (see docs/deployment-strategy.md
+            // for the reasoning style applied elsewhere in this project).
+            steps {
+                withSonarQubeEnv('sonarqube-server') {
+                    sh '''
+                        sonar-scanner \
+                          -Dsonar.projectKey=queueguard \
+                          -Dsonar.sources=queue_service/app,booking_service/app,notification_service/app \
+                          -Dsonar.python.version=3.11
+                    '''
+                }
+            }
+        }
+
+        stage('Quality Gate') {
+            steps {
+                timeout(time: 5, unit: 'MINUTES') {
+                    waitForQualityGate abortPipeline: true
+                }
+            }
+        }
+
+        stage('Coverage Report') {
+            steps {
+                script {
+                    for (svc in env.SERVICES.split(' ')) {
+                        dir(svc) {
+                            sh '''
+                                . .venv/bin/activate
+                                pytest --cov=app --cov-report=xml:coverage.xml --cov-report=html tests/test_unit.py
+                            '''
+                        }
+                    }
+                }
+            }
+            post {
+                always {
+                    publishHTML(target: [
+                        allowMissing: true,
+                        alwaysLinkToLastBuild: true,
+                        keepAll: true,
+                        reportDir: 'booking_service/htmlcov',
+                        reportFiles: 'index.html',
+                        reportName: 'Coverage Report (booking_service)'
+                    ])
+                }
+            }
+        }
+
+        stage('Docker Build') {
+            steps {
+                script {
+                    for (svc in env.SERVICES.split(' ')) {
+                        def imageName = svc.replace('_', '-')
+                        sh "docker build -t ${ECR_REGISTRY}/queueguard-${imageName}:${IMAGE_TAG} ${svc}"
+                    }
+                }
+            }
+        }
+
+        stage('Push to ECR') {
+            steps {
+                withCredentials([[$class: 'AmazonWebServicesCredentialsBinding', credentialsId: 'aws-credentials']]) {
+                    sh "aws ecr get-login-password --region ${AWS_REGION} | docker login --username AWS --password-stdin ${ECR_REGISTRY}"
+                    script {
+                        for (svc in env.SERVICES.split(' ')) {
+                            def imageName = svc.replace('_', '-')
+                            sh "docker push ${ECR_REGISTRY}/queueguard-${imageName}:${IMAGE_TAG}"
+                        }
+                    }
+                }
+            }
+        }
+
+        stage('Deploy to Kubernetes (Ansible)') {
+            // Rolling update, per docs/deployment-strategy.md - never
+            // deploys straight from this machine; only ever deploys the
+            // image tag that was just pushed to ECR above.
+            steps {
+                withCredentials([[$class: 'AmazonWebServicesCredentialsBinding', credentialsId: 'aws-credentials']]) {
+                    sh "aws eks update-kubeconfig --region ${AWS_REGION} --name queueguard"
+                    ansiblePlaybook(
+                        playbook: 'ansible/deploy.yml',
+                        inventory: 'ansible/inventory.ini',
+                        extraVars: [
+                            registry : "${ECR_REGISTRY}",
+                            image_tag: "${IMAGE_TAG}"
+                        ]
+                    )
+                }
+            }
+        }
+
+        stage('Smoke Tests') {
+            steps {
+                sh '''
+                    QUEUE_URL=$(kubectl -n queueguard get svc queue-service -o jsonpath='{.spec.clusterIP}')
+                    kubectl -n queueguard run smoke-test --rm -i --restart=Never --image=curlimages/curl -- \
+                        curl -sf http://${QUEUE_URL}:8001/health/live
+                '''
+            }
+        }
+    }
+
+    post {
+        success {
+            echo "Build ${IMAGE_TAG} deployed successfully."
+        }
+        failure {
+            echo "Build failed - check stage logs above. No stage in this pipeline is allowed to silently pass a failing build."
+        }
+        always {
+            sh 'docker compose down -v || true'
+        }
+    }
+}

@@ -1,0 +1,24 @@
+global:
+  resolve_timeout: 5m
+
+route:
+  receiver: "default"
+  group_by: ["alertname"]
+  group_wait: 10s
+  group_interval: 30s
+  repeat_interval: 1h
+  routes:
+    - match:
+        severity: critical
+      receiver: "critical-alerts"
+
+receivers:
+  - name: "default"
+    # Wire up a real webhook/Slack/email integration here for the demo.
+    # A webhook receiver like this one is easy to demo locally:
+    # webhook_configs:
+    #   - url: "http://localhost:5001/alerts"
+
+  - name: "critical-alerts"
+    # Same idea, routed separately so critical alerts can page differently
+    # from warnings during the final demo.

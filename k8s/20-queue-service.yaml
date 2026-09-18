@@ -1,0 +1,55 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: queue-service
+  namespace: queueguard
+  labels:
+    app: queue-service
+spec:
+  replicas: 2
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1
+      maxUnavailable: 0   # zero downtime: never drop below desired replica count
+  selector:
+    matchLabels:
+      app: queue-service
+  template:
+    metadata:
+      labels:
+        app: queue-service
+    spec:
+      containers:
+        - name: queue-service
+          # Replaced by Ansible/Jenkins at deploy time - see ansible/deploy.yml
+          image: __REGISTRY__/queueguard-queue-service:__TAG__
+          ports:
+            - containerPort: 8001
+          envFrom:
+            - configMapRef:
+                name: queueguard-config
+          livenessProbe:
+            httpGet: { path: /health/live, port: 8001 }
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          readinessProbe:
+            httpGet: { path: /health/ready, port: 8001 }
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          resources:
+            requests: { cpu: "100m", memory: "128Mi" }
+            limits: { cpu: "300m", memory: "256Mi" }
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: queue-service
+  namespace: queueguard
+spec:
+  selector:
+    app: queue-service
+  ports:
+    - port: 8001
+      targetPort: 8001
+  type: ClusterIP

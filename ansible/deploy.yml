@@ -1,0 +1,91 @@
+---
+# Deploys QueueGuard to the EKS cluster.
+#
+# This is the step that makes the "registry round-trip" real: it never
+# deploys an image built on this machine directly. It only ever deploys
+# images that were already pushed to ECR by the Jenkins pipeline
+# (see ci/Jenkinsfile), by tag.
+#
+# Usage:
+#   ansible-playbook -i inventory.ini deploy.yml \
+#       -e registry=123456789.dkr.ecr.us-east-1.amazonaws.com \
+#       -e image_tag=abc1234
+#
+# Requires: kubectl configured against the target cluster
+#   (aws eks update-kubeconfig --name queueguard --region us-east-1)
+
+- name: Deploy QueueGuard to Kubernetes
+  hosts: local
+  gather_facts: false
+
+  vars:
+    namespace: queueguard
+    k8s_dir: "{{ playbook_dir }}/../k8s"
+    services:
+      - queue-service
+      - booking-service
+      - notification-service
+
+  tasks:
+    - name: Fail fast if required vars are missing
+      ansible.builtin.assert:
+        that:
+          - registry is defined
+          - image_tag is defined
+        fail_msg: "Pass -e registry=<ecr-registry> -e image_tag=<tag>"
+
+    - name: Apply namespace, config, and infra manifests (idempotent)
+      ansible.builtin.command:
+        cmd: "kubectl apply -f {{ item }}"
+      loop:
+        - "{{ k8s_dir }}/00-namespace.yaml"
+        - "{{ k8s_dir }}/01-configmap.yaml"
+        - "{{ k8s_dir }}/02-secrets.yaml"   # student must have created this from the .example
+        - "{{ k8s_dir }}/10-postgres.yaml"
+        - "{{ k8s_dir }}/11-redis.yaml"
+        - "{{ k8s_dir }}/12-rabbitmq.yaml"
+      register: apply_infra
+      changed_when: "'unchanged' not in apply_infra.stdout"
+
+    - name: Wait for infra dependencies to be ready before deploying apps
+      ansible.builtin.command:
+        cmd: >
+          kubectl -n {{ namespace }} wait --for=condition=available
+          --timeout=180s deployment/{{ item }}
+      loop:
+        - postgres
+        - redis
+        - rabbitmq
+
+    - name: Apply application Deployments/Services (base manifests, placeholder image)
+      ansible.builtin.command:
+        cmd: "kubectl apply -f {{ k8s_dir }}/{{ item }}"
+      loop:
+        - "20-queue-service.yaml"
+        - "21-booking-service.yaml"
+        - "22-notification-service.yaml"
+
+    - name: Apply HPA manifests
+      ansible.builtin.command:
+        cmd: "kubectl apply -f {{ k8s_dir }}/30-hpa.yaml"
+
+    - name: Set each deployment's image to the newly pushed ECR tag (triggers rolling update)
+      ansible.builtin.command:
+        cmd: >
+          kubectl -n {{ namespace }} set image
+          deployment/{{ item }} {{ item }}={{ registry }}/queueguard-{{ item }}:{{ image_tag }}
+      loop: "{{ services }}"
+
+    - name: Wait for each rollout to complete (this is where a bad build would be caught)
+      ansible.builtin.command:
+        cmd: "kubectl -n {{ namespace }} rollout status deployment/{{ item }} --timeout=180s"
+      loop: "{{ services }}"
+
+    - name: Show final pod status
+      ansible.builtin.command:
+        cmd: "kubectl -n {{ namespace }} get pods -o wide"
+      register: final_status
+
+    - name: Print final pod status
+      ansible.builtin.debug:
+        var: final_status.stdout_lines

@@ -1,0 +1,15 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: queueguard-config
+  namespace: queueguard
+data:
+  REDIS_HOST: "redis"
+  REDIS_PORT: "6379"
+  ADMIT_BATCH_SIZE: "5"
+  ADMIT_INTERVAL_SECONDS: "5"
+  TOKEN_TTL_SECONDS: "300"
+  RABBITMQ_URL: "amqp://guest:guest@rabbitmq:5672/"
+  BOOKING_EVENTS_QUEUE: "booking_events"
+  DATABASE_URL: "postgresql+psycopg2://queueguard:queueguard@postgres:5432/queueguard"
+  PAYMENT_FAILURE_RATE: "0.0"
