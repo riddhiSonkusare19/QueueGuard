@@ -106,23 +106,42 @@ pipeline {
                 bat 'docker compose up -d'
             }
         }
-        stage('Smoke Test') {
-            steps {
-                bat '''
-                    echo ===== QueueGuard Smoke Test =====
+       stage('Smoke Test') {
+    steps {
+        bat '''
+            echo ===== QueueGuard Smoke Test =====
 
-                    echo Checking queue service...
-                    curl.exe -f http://localhost:8001/health/live
+            echo Waiting for services to become ready...
 
-                    echo.
-                    echo Checking booking service...
-                    curl.exe -f http://localhost:8002/health/live
+            powershell -NoProfile -Command ^
+                "$maxAttempts=12; $attempt=1; while ($attempt -le $maxAttempts) { try { $q=Invoke-WebRequest -UseBasicParsing http://localhost:8001/health/live -TimeoutSec 3; $b=Invoke-WebRequest -UseBasicParsing http://localhost:8002/health/live -TimeoutSec 3; if ($q.StatusCode -eq 200 -and $b.StatusCode -eq 200) { exit 0 } } catch { } Write-Host ('Attempt ' + $attempt + ' failed - retrying...'); Start-Sleep -Seconds 5; $attempt++ }; exit 1"
 
-                    echo.
-                    echo ===== Smoke Test Passed =====
-                '''
-            }
-        }
+            if errorlevel 1 (
+                echo Services did not become ready in time.
+                exit /b 1
+            )
+
+            echo.
+            echo Checking queue service...
+            curl.exe -f http://localhost:8001/health/live
+            if errorlevel 1 (
+                echo Queue service smoke test FAILED.
+                exit /b 1
+            )
+
+            echo.
+            echo Checking booking service...
+            curl.exe -f http://localhost:8002/health/live
+            if errorlevel 1 (
+                echo Booking service smoke test FAILED.
+                exit /b 1
+            )
+
+            echo.
+            echo ===== Smoke Test Passed =====
+        '''
+    }
+}
     }
 
     post {
