@@ -90,14 +90,7 @@ pipeline {
             }
             post {
                 always {
-                    publishHTML(target: [
-                        allowMissing: true,
-                        alwaysLinkToLastBuild: true,
-                        keepAll: true,
-                        reportDir: 'booking_service/htmlcov',
-                        reportFiles: 'index.html',
-                        reportName: 'Coverage Report (booking_service)'
-                    ])
+                    archiveArtifacts artifacts: '**/coverage.xml, **/htmlcov/**', allowEmptyArchive: true
                 }
             }
         }
@@ -144,6 +137,7 @@ pipeline {
         }
     }
 }
+
 
 
 
