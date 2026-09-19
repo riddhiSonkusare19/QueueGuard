@@ -1,4 +1,4 @@
-﻿version: "3.9"
+version: "3.9"
 
 services:
   postgres:
@@ -94,6 +94,11 @@ services:
       - "3000:3000"
     depends_on:
       - prometheus
+    volumes:
+      - grafana_data:/var/lib/grafana
 volumes:
   postgres_data:
+  grafana_data:
+
+
 

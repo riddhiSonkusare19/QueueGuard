@@ -21,3 +21,8 @@ terraform/*.tfstate
 terraform/*.tfstate.*
 *.tfvars
 !terraform/example.tfvars
+
+# Jenkins test artifacts
+**/unit-results.xml
+**/integration-results.xml
+
