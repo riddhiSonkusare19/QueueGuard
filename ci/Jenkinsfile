@@ -71,7 +71,7 @@ pipeline {
             post {
                 always {
                     junit '**/integration-results.xml'
-                    bat 'docker compose down -v'
+                    bat 'docker compose down'
                 }
             }
         }
@@ -152,7 +152,7 @@ pipeline {
             echo 'QueueGuard CI pipeline failed. Check the failed stage above.'
         }
         always {
-            bat 'docker compose down -v'
+            bat 'docker compose down'
         }
     }
 }
