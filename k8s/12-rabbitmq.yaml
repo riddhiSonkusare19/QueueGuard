@@ -23,10 +23,11 @@ spec:
             - secretRef:
                 name: queueguard-secrets
           readinessProbe:
-            exec:
-              command: ["rabbitmq-diagnostics", "-q", "ping"]
+            tcpSocket:
+              port: 5672
             initialDelaySeconds: 10
             periodSeconds: 10
+            timeoutSeconds: 3
           resources:
             requests: { cpu: "100m", memory: "256Mi" }
             limits: { cpu: "500m", memory: "512Mi" }
@@ -46,3 +47,9 @@ spec:
     - name: management
       port: 15672
       targetPort: 15672
+
+
+
+
+
+

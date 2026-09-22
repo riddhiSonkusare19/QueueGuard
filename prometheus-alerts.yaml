@@ -1,0 +1,26 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: prometheus-alerts
+  namespace: default
+data:
+  alert.rules.yml: |
+    groups:
+      - name: queueguard-kubernetes-alerts
+        rules:
+
+          - alert: HighPodCPU
+            expr: >
+              sum by (pod) (
+                rate(container_cpu_usage_seconds_total{
+                  namespace="queueguard",
+                  container!="",
+                  container!="POD"
+                }[5m])
+              ) > 0.8
+            for: 2m
+            labels:
+              severity: warning
+            annotations:
+              summary: "High CPU usage detected on pod {{ $labels.pod }}"
+              description: "QueueGuard pod CPU usage has remained above 80% for more than 2 minutes."

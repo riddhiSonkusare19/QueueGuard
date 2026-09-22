@@ -11,5 +11,6 @@ data:
   TOKEN_TTL_SECONDS: "300"
   RABBITMQ_URL: "amqp://guest:guest@rabbitmq:5672/"
   BOOKING_EVENTS_QUEUE: "booking_events"
-  DATABASE_URL: "postgresql+psycopg2://queueguard:queueguard@postgres:5432/queueguard"
+  DATABASE_URL: "postgresql+psycopg2://queueguard:change-me@postgres:5432/queueguard"
   PAYMENT_FAILURE_RATE: "0.0"
+

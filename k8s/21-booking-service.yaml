@@ -22,7 +22,7 @@ spec:
     spec:
       containers:
         - name: booking-service
-          image: __REGISTRY__/queueguard-booking-service:__TAG__
+          image: queueguard-booking-service:local
           ports:
             - containerPort: 8002
           envFrom:

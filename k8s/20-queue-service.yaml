@@ -23,7 +23,7 @@ spec:
       containers:
         - name: queue-service
           # Replaced by Ansible/Jenkins at deploy time - see ansible/deploy.yml
-          image: __REGISTRY__/queueguard-queue-service:__TAG__
+          image: queueguard-queue-service:local
           ports:
             - containerPort: 8001
           envFrom:

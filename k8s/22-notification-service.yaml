@@ -22,7 +22,7 @@ spec:
     spec:
       containers:
         - name: notification-service
-          image: __REGISTRY__/queueguard-notification-service:__TAG__
+          image: queueguard-notification-service:local
           envFrom:
             - configMapRef:
                 name: queueguard-config
