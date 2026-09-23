@@ -1,29 +1,35 @@
 import json
 import logging
 
-import pika
+from kafka import KafkaProducer
 
 from app.config import settings
 
 logger = logging.getLogger("booking_service.messaging")
 
+producer = KafkaProducer(
+    bootstrap_servers=settings.KAFKA_BOOTSTRAP_SERVERS,
+    value_serializer=lambda value: json.dumps(value).encode("utf-8"),
+)
+
 
 def publish_booking_event(event_type: str, payload: dict) -> None:
-    """Publishes a booking event to RabbitMQ for the Notification Service
-    to pick up. Failures here are logged but never block the booking
-    response - a lost notification shouldn't fail a confirmed booking."""
+    """Publishes a booking event to Kafka for the Notification Service."""
     try:
-        connection = pika.BlockingConnection(pika.URLParameters(settings.RABBITMQ_URL))
-        channel = connection.channel()
-        channel.queue_declare(queue=settings.BOOKING_EVENTS_QUEUE, durable=True)
-
         message = {"event_type": event_type, **payload}
-        channel.basic_publish(
-            exchange="",
-            routing_key=settings.BOOKING_EVENTS_QUEUE,
-            body=json.dumps(message),
-            properties=pika.BasicProperties(delivery_mode=2),  # persistent
+
+        producer.send(
+            settings.BOOKING_EVENTS_TOPIC,
+            value=message,
         )
-        connection.close()
+
+        producer.flush()
+
+        logger.info(
+            "published booking event %s to Kafka topic %s",
+            event_type,
+            settings.BOOKING_EVENTS_TOPIC,
+        )
+
     except Exception:
         logger.exception("failed to publish booking event %s", event_type)
