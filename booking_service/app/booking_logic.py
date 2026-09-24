@@ -1,6 +1,11 @@
-"""Core booking logic: admission-token verification, slot claiming under
-a distributed lock, and a simulated payment step. Kept free of FastAPI
-so it can be unit tested against fakeredis and an in-memory sqlite db.
+"""Core booking logic.
+
+Handles:
+- admission-token verification
+- event/slot lookup
+- slot claiming under a distributed lock
+- simulated payment
+- booking cancellation
 """
 
 import random
@@ -8,7 +13,7 @@ import time
 from dataclasses import dataclass
 
 from app.config import settings
-from app.db import Booking, Event
+from app.db import Booking, Event, Slot
 from app.distributed_lock import distributed_lock
 
 
@@ -29,8 +34,7 @@ class EventNotFoundError(Exception):
 
 
 def _admitted_key(event_id: str, user_id: str) -> str:
-    # Must match the key format the Queue Service writes to - the two
-    # services agree on this key shape as their integration contract.
+    # Must match the key format used by Queue Service.
     return f"admitted:{event_id}:{user_id}"
 
 
@@ -46,45 +50,104 @@ class PaymentResult:
 
 
 def simulate_payment(user_id: str) -> PaymentResult:
-    """Simulates a payment gateway. No real gateway is connected - this
-    exists purely so the team can demo retries, timeouts, and failure
-    handling without needing a real payments integration."""
+    """Simulate a payment gateway."""
+
     if settings.PAYMENT_LATENCY_SECONDS > 0:
         time.sleep(settings.PAYMENT_LATENCY_SECONDS)
 
     if random.random() < settings.PAYMENT_FAILURE_RATE:
-        return PaymentResult(success=False, reason="simulated_payment_decline")
+        return PaymentResult(
+            success=False,
+            reason="simulated_payment_decline",
+        )
 
     return PaymentResult(success=True)
 
 
-def claim_slot(db, r, event_id: str, user_id: str, admission_token: str) -> Booking:
-    """The heart of the reliability story: verifies the user was actually
-    admitted from the queue, then claims a slot under a distributed lock
-    so two users admitted in the same batch can never claim the same
-    last slot.
-    """
-    if not verify_admission_token(r, event_id, user_id, admission_token):
+def claim_slot(
+    db,
+    r,
+    event_id: str,
+    user_id: str,
+    admission_token: str,
+) -> Booking:
+    """Verify admission and claim one available slot for the event."""
+
+    # 1. Verify that the user was admitted by the Queue Service.
+    if not verify_admission_token(
+        r,
+        event_id,
+        user_id,
+        admission_token,
+    ):
         raise InvalidAdmissionTokenError(
-            f"user {user_id} does not hold a valid admission token for event {event_id}"
+            f"user {user_id} does not hold a valid admission token "
+            f"for event {event_id}"
         )
 
+    # 2. Lock the event while selecting and booking a slot.
     lock_key = f"lock:slot:{event_id}"
-    with distributed_lock(r, lock_key, settings.LOCK_TTL_SECONDS, settings.LOCK_ACQUIRE_TIMEOUT_SECONDS):
-        event = db.query(Event).filter(Event.id == event_id).with_for_update().first()
+
+    with distributed_lock(
+        r,
+        lock_key,
+        settings.LOCK_TTL_SECONDS,
+        settings.LOCK_ACQUIRE_TIMEOUT_SECONDS,
+    ):
+        # 3. Verify the event exists.
+        event = (
+            db.query(Event)
+            .filter(Event.id == event_id)
+            .with_for_update()
+            .first()
+        )
+
         if event is None:
-            raise EventNotFoundError(f"event {event_id} does not exist")
+            raise EventNotFoundError(
+                f"event {event_id} does not exist"
+            )
 
-        if event.total_slots <= 0:
-            raise NoSlotsAvailableError(f"no slots remaining for event {event_id}")
+        # 4. Find an available slot belonging to this event.
+        slot = (
+            db.query(Slot)
+            .filter(
+                Slot.event_id == event_id,
+                Slot.status == "available",
+            )
+            .with_for_update()
+            .first()
+        )
 
+        if slot is None:
+            raise NoSlotsAvailableError(
+                f"no slots remaining for event {event_id}"
+            )
+
+        # 5. Simulate payment before confirming the booking.
         payment = simulate_payment(user_id)
-        if not payment.success:
-            raise PaymentFailedError(payment.reason or "payment_failed")
 
-        event.total_slots -= 1
-        booking = Booking(event_id=event_id, user_id=user_id, status="confirmed")
+        if not payment.success:
+            raise PaymentFailedError(
+                payment.reason or "payment_failed"
+            )
+
+        # 6. Mark the selected slot as booked.
+        slot.status = "booked"
+
+        # 7. Keep the event counter consistent.
+        if event.total_slots > 0:
+            event.total_slots -= 1
+
+        # 8. Create booking using slot_id.
+        booking = Booking(
+            slot_id=slot.id,
+            user_id=user_id,
+            status="confirmed",
+        )
+
         db.add(booking)
+
+        # 9. Persist everything atomically.
         db.commit()
         db.refresh(booking)
 
@@ -92,16 +155,43 @@ def claim_slot(db, r, event_id: str, user_id: str, admission_token: str) -> Book
 
 
 def cancel_booking(db, booking_id: str) -> Booking:
-    booking = db.query(Booking).filter(Booking.id == booking_id).first()
+    """Cancel a booking and make its slot available again."""
+
+    booking = (
+        db.query(Booking)
+        .filter(Booking.id == booking_id)
+        .first()
+    )
+
     if booking is None:
-        raise EventNotFoundError(f"booking {booking_id} does not exist")
+        raise EventNotFoundError(
+            f"booking {booking_id} does not exist"
+        )
 
     if booking.status == "confirmed":
-        event = db.query(Event).filter(Event.id == booking.event_id).first()
-        if event is not None:
-            event.total_slots += 1
+        slot = (
+            db.query(Slot)
+            .filter(Slot.id == booking.slot_id)
+            .first()
+        )
 
-    booking.status = "cancelled"
+        if slot is not None and slot.status == "booked":
+            slot.status = "available"
+
+            event = (
+                db.query(Event)
+                .filter(Event.id == slot.event_id)
+                .first()
+            )
+
+            if event is not None:
+                event.total_slots += 1
+
+        # The current database CHECK constraint does not allow
+        # "cancelled", so use "failed" for a non-active booking.
+        booking.status = "failed"
+
     db.commit()
     db.refresh(booking)
+
     return booking
